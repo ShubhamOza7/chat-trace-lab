@@ -16,3 +16,7 @@ uvicorn[standard]>=0.30.0
 
 # Config
 python-dotenv>=1.0.0
+
+# PRISMtrace (optional). Installed by default so the wiring is importable, but
+# every PRISMtrace code path no-ops unless PRISMTRACE_API_KEY is set.
+prismtrace-sdk>=0.3.2

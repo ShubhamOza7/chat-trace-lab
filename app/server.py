@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import prismtrace_setup as prismtrace
 from .chat import ChatSession, InjectedFailure
 from .config import SETTINGS
 from .scenarios import SCENARIOS, SCENARIOS_BY_NAME, run_all, run_scenario
@@ -79,6 +80,7 @@ def healthz() -> dict[str, Any]:
         "exporter": SETTINGS.exporter,
         "otlp_endpoint": SETTINGS.otlp_endpoint or None,
         "capture_content": SETTINGS.capture_content,
+        "prismtrace": prismtrace.status(),
     }
 
 

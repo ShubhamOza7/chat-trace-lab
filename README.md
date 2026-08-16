@@ -94,6 +94,38 @@ stripped — worth testing if the product will ever see production traffic.
 
 ---
 
+## PRISMtrace
+
+A second, independent tracer is wired in alongside OpenTelemetry, so you can watch
+the same conversations land in both and compare. It is **entirely opt-in** — with
+`PRISMTRACE_API_KEY` unset, every PRISMtrace code path is a no-op and nothing
+changes.
+
+```bash
+# in .env (gitignored) — never in .env.example
+PRISMTRACE_API_KEY=pt-sk-...
+PRISMTRACE_PROJECT_ID=<project uuid>
+PRISMTRACE_HOST=https://prismtrace-staging.up.railway.app
+```
+
+| Backend | Integration |
+| --- | --- |
+| `langchain` | `PRISMtraceCallbackHandler` attached per invocation, then flushed |
+| `anthropic` | One trace per model call posted to `/api/traces` |
+
+`ChatSession.session_id` is passed through as PRISMtrace's `session_id`, which is
+what groups a conversation's turns into a trajectory. Handlers are cached per
+session because the handler takes `session_id` at construction — one shared
+handler would merge every conversation into a single trajectory.
+
+Check what is active at any time:
+
+```bash
+curl -s localhost:8000/healthz | python3 -m json.tool
+```
+
+Config details and the three easy-to-hit gotchas are in [CLAUDE.md](CLAUDE.md).
+
 ## Generating traces without typing
 
 Six scripted conversations cover the shapes worth checking:

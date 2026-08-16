@@ -18,6 +18,7 @@ from langchain_core.messages import (
 )
 from opentelemetry.trace import Status, StatusCode
 
+from .. import prismtrace_setup as prismtrace
 from ..config import SETTINGS
 from ..messages import Message, ToolCall, TurnResult, Usage
 from .base import finish_inference_span, start_inference_span
@@ -79,11 +80,24 @@ class LangChainBackend:
         system: str,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        session_id: str | None = None,
     ) -> TurnResult:
         span = start_inference_span(SETTINGS.model, system, messages, self.name)
+
+        # PRISMtrace's real LangChain integration: a callback handler on the
+        # invocation. One handler per conversation — it takes session_id at
+        # construction, so a shared handler would merge every conversation into
+        # a single trajectory. None unless PRISMTRACE_API_KEY is set.
+        config: dict[str, Any] = {}
+        handler = prismtrace.langchain_handler(session_id) if session_id else None
+        if handler is not None:
+            config["callbacks"] = [handler]
+
         try:
             model = self.llm.bind_tools(tools) if tools else self.llm
-            reply: AIMessage = model.invoke(_to_langchain_messages(system, messages))
+            reply: AIMessage = model.invoke(
+                _to_langchain_messages(system, messages), config=config or None
+            )
         except Exception as exc:
             span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, str(exc)))
@@ -113,4 +127,6 @@ class LangChainBackend:
             stop_reason=meta.get("stop_reason"),
         )
         finish_inference_span(span, result)
+        if handler is not None:
+            prismtrace.flush(session_id)
         return result

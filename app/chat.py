@@ -106,7 +106,9 @@ class ChatSession:
 
             while iterations < MAX_TOOL_ITERATIONS:
                 iterations += 1
-                result = self.backend.complete(SYSTEM_PROMPT, self.history, TOOL_SPECS)
+                result = self.backend.complete(
+                    SYSTEM_PROMPT, self.history, TOOL_SPECS, session_id=self.session_id
+                )
 
                 totals.input_tokens += result.usage.input_tokens
                 totals.output_tokens += result.usage.output_tokens

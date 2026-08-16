@@ -27,6 +27,7 @@ class ChatBackend(Protocol):
         system: str,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        session_id: str | None = None,
     ) -> TurnResult: ...
 
 
