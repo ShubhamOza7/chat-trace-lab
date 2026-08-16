@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>chat-trace-lab</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --fg: #1c1b19; --muted: #6b6862;
+    --panel: #ffffff; --border: #e2ded6; --accent: #b4531f;
+    --user-bg: #efece5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --fg: #eceae5; --muted: #9a958c;
+      --panel: #201f1c; --border: #34322d; --accent: #e08a52;
+      --user-bg: #2a2825;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px 40px;
+  }
+  main { width: 100%; max-width: 760px; }
+  h1 { font-size: 18px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .bar {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    margin-bottom: 14px; font-size: 13px;
+  }
+  select, button, input {
+    font: inherit; font-size: 13px; padding: 7px 10px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--panel); color: var(--fg);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .55; cursor: default; }
+  #log {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    min-height: 320px; padding: 14px; margin-bottom: 12px;
+  }
+  .msg { margin-bottom: 14px; }
+  .msg:last-child { margin-bottom: 0; }
+  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 3px; }
+  .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user .body { background: var(--user-bg); padding: 8px 11px; border-radius: 8px; display: inline-block; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .meta code { font-size: 11.5px; }
+  .err .body { color: #c0392b; }
+  form { display: flex; gap: 8px; }
+  form input { flex: 1; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>chat-trace-lab</h1>
+  <div class="sub">Every reply prints its trace id. Paste it into your tracing product to find the turn.</div>
+
+  <div class="bar">
+    <label>backend
+      <select id="backend">
+        <option value="">(server default)</option>
+        <option value="anthropic">anthropic</option>
+        <option value="langchain">langchain</option>
+      </select>
+    </label>
+    <button id="newSession" type="button">New session</button>
+    <button id="runScenarios" type="button">Run all scenarios</button>
+    <span id="sessionLabel" class="meta"></span>
+  </div>
+
+  <div id="log"></div>
+
+  <form id="form">
+    <input id="input" autocomplete="off" placeholder="Ask something — try &quot;centre frequency of channel 36?&quot;" />
+    <button class="primary" id="send" type="submit">Send</button>
+  </form>
+
+  <footer>Type <code>/fail</code> to make a turn error on purpose.</footer>
+</main>
+
+<script>
+  let sessionId = null;
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const send = document.getElementById("send");
+  const backendSel = document.getElementById("backend");
+  const sessionLabel = document.getElementById("sessionLabel");
+
+  function add(who, text, meta, cls) {
+    const el = document.createElement("div");
+    el.className = "msg " + (cls || who);
+    const w = document.createElement("div");
+    w.className = "who"; w.textContent = who;
+    const b = document.createElement("div");
+    b.className = "body"; b.textContent = text;
+    el.append(w, b);
+    if (meta) {
+      const m = document.createElement("div");
+      m.className = "meta"; m.innerHTML = meta;
+      el.append(m);
+    }
+    log.append(el);
+    log.scrollIntoView({ block: "end" });
+  }
+
+  function setSession(id) {
+    sessionId = id;
+    sessionLabel.textContent = id ? "session " + id : "";
+  }
+
+  document.getElementById("newSession").onclick = () => {
+    setSession(null);
+    log.innerHTML = "";
+  };
+
+  document.getElementById("runScenarios").onclick = async () => {
+    add("system", "Running all scenarios…");
+    const res = await fetch("/scenarios/run", { method: "POST" });
+    const runs = await res.json();
+    for (const r of runs) {
+      const ids = (r.trace_ids || []).map(t => "<code>" + t + "</code>").join(", ");
+      add("system", r.scenario + (r.error ? " — errored: " + r.error : " — ok"),
+          "session <code>" + r.session_id + "</code>" + (ids ? "<br>traces: " + ids : ""));
+    }
+  };
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    add("you", text);
+    send.disabled = true;
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          session_id: sessionId,
+          backend: backendSel.value || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        add("error", data.detail || ("HTTP " + res.status), null, "err");
+        return;
+      }
+      setSession(data.session_id);
+      let meta = "trace <code>" + (data.trace_id || "—") + "</code>"
+        + " · turn " + data.turn_index
+        + " · " + data.input_tokens + " in / " + data.output_tokens + " out";
+      if (data.tools_used && data.tools_used.length) meta += " · tools: " + data.tools_used.join(", ");
+      add("bot", data.reply, meta);
+    } catch (err) {
+      add("error", String(err), null, "err");
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  };
+
+  input.focus();
+</script>
+</body>
+</html>
