@@ -27,6 +27,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+# Imported for its side effect: app.config calls load_dotenv() at import time.
+# Without this, a module that imports us before app.config (app.chat does) would
+# read the env vars below before .env is loaded, silently disabling PRISMtrace.
+from . import config as _config  # noqa: F401
 from .messages import Message
 
 log = logging.getLogger(__name__)
@@ -40,7 +44,10 @@ HOST = os.getenv(
 ).strip().rstrip("/")
 AGENT_NAME = os.getenv("PRISMTRACE_AGENT_NAME", "chat-trace-lab").strip()
 
-_TIMEOUT_SECONDS = 5.0
+# The staging deployment regularly answers ingest in >5s (its own /api/intelligence
+# reports an exhausted DB connection pool). Too low a timeout logs a failure while
+# the trace actually lands, which is worse than waiting.
+_TIMEOUT_SECONDS = float(os.getenv("PRISMTRACE_TIMEOUT_SECONDS", "20"))
 
 
 def enabled() -> bool:

@@ -31,6 +31,16 @@ def main() -> int:
         return 0
 
     init_tracing()
+
+    # Say out loud whether PRISMtrace is on. It no-ops when disabled, so without
+    # this a misconfiguration looks identical to a successful run.
+    from app.prismtrace_setup import status as prismtrace_status  # noqa: E402
+
+    pt = prismtrace_status()
+    print(
+        f"PRISMtrace: {'ON  -> ' + str(pt['host']) if pt['enabled'] else 'OFF (PRISMTRACE_API_KEY unset)'}"
+    )
+
     try:
         if args.scenario:
             scenario = SCENARIOS_BY_NAME.get(args.scenario)
