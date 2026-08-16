@@ -72,7 +72,6 @@ class AnthropicBackend:
         session_id: str | None = None,
     ) -> TurnResult:
         span = start_inference_span(SETTINGS.model, system, messages, self.name)
-        started = time.monotonic()
         try:
             # No `thinking` parameter: on Claude Opus 5 that means adaptive
             # thinking, which is the recommended default.
