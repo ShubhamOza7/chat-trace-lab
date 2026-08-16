@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
+from datetime import datetime
 from typing import Any
 
 from .messages import Message
@@ -124,8 +126,41 @@ def _wire_messages(messages: list[Message]) -> list[dict[str, str]]:
     return out
 
 
+def new_trace_id() -> str:
+    """Client-minted trace id.
+
+    `TraceRequest` accepts a caller-supplied `trace_id`, so one id can address
+    both the trace and its span tree without depending on the ingest response.
+    """
+    return f"ctl-{uuid.uuid4().hex}"
+
+
+def _post(path: str, payload: dict[str, Any]) -> None:
+    """POST to PRISMtrace. Swallows every error by design."""
+    try:
+        import httpx
+
+        response = httpx.post(
+            f"{HOST}{path}",
+            headers={
+                "Content-Type": "application/json",
+                # Not a Bearer token — this API rejects Authorization headers.
+                "X-PRISMtrace-Key": API_KEY,
+            },
+            json=payload,
+            timeout=_TIMEOUT_SECONDS,
+        )
+        if response.status_code >= 400:
+            log.warning(
+                "PRISMtrace %s -> %s: %s", path, response.status_code, response.text[:200]
+            )
+    except Exception as exc:
+        log.warning("PRISMtrace %s failed: %s", path, exc)
+
+
 def emit_trace(
     *,
+    trace_id: str,
     session_id: str,
     model: str,
     messages: list[Message],
@@ -134,36 +169,72 @@ def emit_trace(
     tokens_in: int = 0,
     tokens_out: int = 0,
 ) -> None:
-    """POST one trace. Swallows every error by design."""
+    """One trace per user turn."""
     if not enabled():
         return
+    _post(
+        "/api/traces",
+        {
+            "project_id": PROJECT_ID,
+            "trace_id": trace_id,
+            "model": model,
+            "input_messages": _wire_messages(messages),
+            "output_message": output,
+            "latency_ms": latency_ms,
+            "session_id": session_id,
+            "agent_name": AGENT_NAME,
+            "token_count_input": tokens_in,
+            "token_count_output": tokens_out,
+        },
+    )
 
-    try:
-        import httpx
 
-        response = httpx.post(
-            f"{HOST}/api/traces",
-            headers={
-                "Content-Type": "application/json",
-                # Not a Bearer token — this API rejects Authorization headers.
-                "X-PRISMtrace-Key": API_KEY,
-            },
-            json={
-                "project_id": PROJECT_ID,
-                "model": model,
-                "input_messages": _wire_messages(messages),
-                "output_message": output,
-                "latency_ms": latency_ms,
-                "session_id": session_id,
-                "agent_name": AGENT_NAME,
-                "token_count_input": tokens_in,
-                "token_count_output": tokens_out,
-            },
-            timeout=_TIMEOUT_SECONDS,
-        )
-        if response.status_code >= 400:
-            log.warning(
-                "PRISMtrace ingest %s: %s", response.status_code, response.text[:200]
-            )
-    except Exception as exc:
-        log.warning("PRISMtrace ingest failed: %s", exc)
+def emit_spans(*, trace_id: str, session_id: str, spans: list[dict[str, Any]]) -> None:
+    """The turn's span tree: one entry per model call and per tool execution.
+
+    Without this, tool executions are invisible to PRISMtrace on both backends —
+    this app runs its own tool loop in `app/chat.py`, so tools are never invoked
+    *through* LangChain and the callback handler never sees them.
+    """
+    if not enabled() or not spans:
+        return
+    _post(
+        "/api/spans/ingest",
+        {
+            "project_id": PROJECT_ID,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "spans": spans,
+        },
+    )
+
+
+def span(
+    *,
+    name: str,
+    span_type: str,
+    start: datetime,
+    end: datetime,
+    status: str = "success",
+    input_text: str | None = None,
+    output_text: str | None = None,
+    error_message: str | None = None,
+    model: str | None = None,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
+) -> dict[str, Any]:
+    """Build one SpanInput. Matches the published schema exactly."""
+    return {
+        "name": name,
+        "span_type": span_type,
+        "start_time": start.isoformat(),
+        "end_time": end.isoformat(),
+        "duration_ms": (end - start).total_seconds() * 1000,
+        "status": status,
+        "input_text": input_text,
+        "output_text": output_text,
+        "error_message": error_message,
+        "model": model,
+        "token_count_input": tokens_in,
+        "token_count_output": tokens_out,
+    }

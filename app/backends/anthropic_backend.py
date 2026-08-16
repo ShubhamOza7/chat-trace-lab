@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import anthropic
 from opentelemetry.trace import Status, StatusCode
 
-from .. import prismtrace_setup as prismtrace
 from ..config import SETTINGS
 from ..messages import Message, ToolCall, TurnResult, Usage
 from .base import finish_inference_span, start_inference_span
@@ -117,20 +115,4 @@ class AnthropicBackend:
             stop_reason=response.stop_reason,
         )
         finish_inference_span(span, result)
-
-        # PRISMtrace: the SDK's ClaudeAgentTracer wants to own the tool loop
-        # (which app/chat.py already owns) and PRISMtrace.trace_llm() has no
-        # session_id, so traces sent that way never form a trajectory. The HTTP
-        # contract does take one. No-ops unless PRISMTRACE_API_KEY is set.
-        if session_id:
-            prismtrace.emit_trace(
-                session_id=session_id,
-                model=result.model,
-                messages=messages,
-                output=result.text,
-                latency_ms=int((time.monotonic() - started) * 1000),
-                tokens_in=usage.input_tokens,
-                tokens_out=usage.output_tokens,
-            )
-
         return result

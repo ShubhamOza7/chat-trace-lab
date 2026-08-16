@@ -58,12 +58,22 @@ Configured in `app/prismtrace_setup.py`. Environment variables:
 
 Where it is wired:
 
-- **LangChain backend** (`app/backends/langchain_backend.py`) — a
-  `PRISMtraceCallbackHandler` is attached per invocation via
-  `config={"callbacks": [...]}`, then flushed. This is PRISMtrace's real
-  framework integration.
-- **Anthropic backend** (`app/backends/anthropic_backend.py`) — posts one trace
-  per model call to `/api/traces`.
+- **`app/chat.py`** — per user turn, posts one trace to `/api/traces` with a
+  client-minted `trace_id`, then its span tree to `/api/spans/ingest` under the
+  same id: one `llm` span per model call, one `tool` span per tool execution.
+  This lives in `chat.py`, not in a backend, so both backends emit the same
+  shape.
+- **LangChain backend** (`app/backends/langchain_backend.py`) — additionally
+  attaches a `PRISMtraceCallbackHandler` per invocation via
+  `config={"callbacks": [...]}`, then flushes. This is PRISMtrace's own
+  framework integration; on this backend you will therefore see both what the
+  handler captures and what the explicit instrumentation captures. That
+  comparison is deliberate.
+
+Tool spans have to be posted explicitly because this app runs its own tool loop
+in `chat.py` — tools are never invoked *through* LangChain, so the callback
+handler never sees them. Without `/api/spans/ingest`, tool calls would be
+invisible to PRISMtrace on both backends.
 
 Three things that are easy to get wrong:
 

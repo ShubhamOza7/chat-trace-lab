@@ -108,10 +108,15 @@ PRISMTRACE_PROJECT_ID=<project uuid>
 PRISMTRACE_HOST=https://prismtrace-staging.up.railway.app
 ```
 
-| Backend | Integration |
-| --- | --- |
-| `langchain` | `PRISMtraceCallbackHandler` attached per invocation, then flushed |
-| `anthropic` | One trace per model call posted to `/api/traces` |
+Per user turn, both backends post one trace to `/api/traces` and its span tree to
+`/api/spans/ingest` — an `llm` span per model call and a `tool` span per tool
+execution, all sharing one client-minted `trace_id`. The `langchain` backend
+*additionally* attaches a `PRISMtraceCallbackHandler`, so you can see what their
+native integration captures next to what explicit instrumentation captures.
+
+Tool spans are posted explicitly on purpose: this app runs its own tool loop, so
+tools are never invoked through LangChain and the callback handler never sees
+them.
 
 `ChatSession.session_id` is passed through as PRISMtrace's `session_id`, which is
 what groups a conversation's turns into a trajectory. Handlers are cached per

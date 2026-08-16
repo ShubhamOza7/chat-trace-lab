@@ -133,6 +133,62 @@ check("child nests under the turn span",
 check("session id recorded", spans[1].attributes.get("session.id") == "sess_selftest")
 
 
+print("\nprismtrace payloads (stubbed transport, no network)")
+os.environ["PRISMTRACE_API_KEY"] = "pt-sk-selftest"
+os.environ["PRISMTRACE_PROJECT_ID"] = "00000000-0000-0000-0000-000000000000"
+
+import importlib  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from app import prismtrace_setup  # noqa: E402
+
+importlib.reload(prismtrace_setup)  # pick up the env vars set above
+
+from app.chat import ChatSession  # noqa: E402
+from app.messages import TurnResult, Usage  # noqa: E402
+
+
+class _StubBackend:
+    name = "stub"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, system, messages, tools, session_id=None):
+        self.calls += 1
+        if self.calls == 1:
+            return TurnResult(
+                "Looking that up.",
+                [
+                    ToolCall("t1", "wifi_channel_info", {"channel": 36, "band": "5"}),
+                    ToolCall("t2", "wifi_channel_info", {"channel": 99, "band": "2.4"}),
+                ],
+                Usage(10, 5),
+                "claude-opus-5",
+                "msg_1",
+                "tool_use",
+            )
+        return TurnResult("Done.", [], Usage(20, 8), "claude-opus-5", "msg_2", "end_turn")
+
+
+posted: dict = {}
+with patch.object(prismtrace_setup, "_post", lambda path, payload: posted.update({path: payload})):
+    _session = ChatSession(backend=_StubBackend())
+    _outcome = _session.send("channel 36 and 99?")
+
+check("both endpoints posted", set(posted) == {"/api/traces", "/api/spans/ingest"}, str(list(posted)))
+if posted:
+    _trace, _spans = posted["/api/traces"], posted["/api/spans/ingest"]
+    check("spans reference the same trace_id", _trace["trace_id"] == _spans["trace_id"])
+    check("session id groups the trajectory", _trace["session_id"] == _session.session_id)
+    check("span per model call and per tool", len(_spans["spans"]) == 4, str(len(_spans["spans"])))
+    check("tool spans present", [s["name"] for s in _spans["spans"]].count("wifi_channel_info") == 2)
+    check("failed tool span marked error",
+          any(s["span_type"] == "tool" and s["status"] == "error" and s["error_message"]
+              for s in _spans["spans"]))
+    check("every span carries the required schema fields",
+          all({"name", "span_type", "start_time"} <= set(s) for s in _spans["spans"]))
+
 print()
 if failures:
     print(f"FAILED: {len(failures)} check(s) — {', '.join(failures)}")

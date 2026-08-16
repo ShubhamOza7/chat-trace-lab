@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from opentelemetry.trace import SpanKind, Status, StatusCode, use_span
 
+from . import prismtrace_setup as prismtrace
 from . import semconv as sc
 from .backends import ChatBackend, build_backend
 from .config import SETTINGS, SYSTEM_PROMPT
@@ -32,17 +34,22 @@ class TurnOutcome:
     stop_reason: str | None = None
 
 
-def _run_tool(call: ToolCall) -> Message:
-    """Execute one tool call inside its own span."""
+def _run_tool(call: ToolCall) -> tuple[Message, dict]:
+    """Execute one tool call inside its own span.
+
+    Returns the tool-result message plus a PRISMtrace span describing the same
+    execution, so both tracing systems see the tool call.
+    """
+    arguments = json.dumps(call.arguments, ensure_ascii=False)
+    started_at = datetime.now(timezone.utc)
+
     with tracer().start_as_current_span(
         f"execute_tool {call.name}", kind=SpanKind.INTERNAL
     ) as span:
         span.set_attribute(sc.TOOL_NAME, call.name)
         span.set_attribute(sc.TOOL_CALL_ID, call.id)
         if SETTINGS.capture_content:
-            span.set_attribute(
-                "gen_ai.tool.call.arguments", json.dumps(call.arguments, ensure_ascii=False)
-            )
+            span.set_attribute("gen_ai.tool.call.arguments", arguments)
         try:
             output = execute_tool(call.name, call.arguments)
         except ToolError as exc:
@@ -50,12 +57,27 @@ def _run_tool(call: ToolCall) -> Message:
             span.set_status(Status(StatusCode.ERROR, str(exc)))
             # Hand the error back to the model rather than aborting the turn —
             # recovering from a bad tool call is itself worth seeing in a trace.
-            return tool_result(call.id, f"Error: {exc}", is_error=True)
+            return tool_result(call.id, f"Error: {exc}", is_error=True), prismtrace.span(
+                name=call.name,
+                span_type="tool",
+                start=started_at,
+                end=datetime.now(timezone.utc),
+                status="error",
+                input_text=arguments,
+                error_message=str(exc),
+            )
 
         if SETTINGS.capture_content:
             span.set_attribute("gen_ai.tool.call.result", output)
         span.set_status(Status(StatusCode.OK))
-        return tool_result(call.id, output)
+        return tool_result(call.id, output), prismtrace.span(
+            name=call.name,
+            span_type="tool",
+            start=started_at,
+            end=datetime.now(timezone.utc),
+            input_text=arguments,
+            output_text=output,
+        )
 
 
 class ChatSession:
@@ -103,11 +125,35 @@ class ChatSession:
             iterations = 0
             reply = ""
             stop_reason = None
+            model_used = ""
+
+            # PRISMtrace: one trace per turn, with a span per model call and per
+            # tool execution beneath it. Built here rather than in a backend so
+            # both backends produce the same shape.
+            turn_started = datetime.now(timezone.utc)
+            pt_trace_id = prismtrace.new_trace_id()
+            pt_spans: list[dict] = []
 
             while iterations < MAX_TOOL_ITERATIONS:
                 iterations += 1
+                call_started = datetime.now(timezone.utc)
                 result = self.backend.complete(
                     SYSTEM_PROMPT, self.history, TOOL_SPECS, session_id=self.session_id
+                )
+                model_used = result.model
+
+                pt_spans.append(
+                    prismtrace.span(
+                        name=f"chat {result.model}",
+                        span_type="llm",
+                        start=call_started,
+                        end=datetime.now(timezone.utc),
+                        status="error" if result.stop_reason == "refusal" else "success",
+                        output_text=result.text,
+                        model=result.model,
+                        tokens_in=result.usage.input_tokens,
+                        tokens_out=result.usage.output_tokens,
+                    )
                 )
 
                 totals.input_tokens += result.usage.input_tokens
@@ -124,7 +170,9 @@ class ChatSession:
 
                 for call in result.tool_calls:
                     tools_used.append(call.name)
-                    self.history.append(_run_tool(call))
+                    tool_message, tool_span = _run_tool(call)
+                    self.history.append(tool_message)
+                    pt_spans.append(tool_span)
             else:
                 reply = (
                     "Stopped after "
@@ -142,6 +190,22 @@ class ChatSession:
                 span.set_attribute("app.chat.tools_used", tools_used)
             if SETTINGS.capture_content:
                 span.set_attribute("app.chat.assistant_message", reply)
+
+            prismtrace.emit_trace(
+                trace_id=pt_trace_id,
+                session_id=self.session_id,
+                model=model_used or "unknown",
+                messages=self.history,
+                output=reply,
+                latency_ms=int(
+                    (datetime.now(timezone.utc) - turn_started).total_seconds() * 1000
+                ),
+                tokens_in=totals.input_tokens,
+                tokens_out=totals.output_tokens,
+            )
+            prismtrace.emit_spans(
+                trace_id=pt_trace_id, session_id=self.session_id, spans=pt_spans
+            )
 
             return TurnOutcome(
                 reply=reply,
